@@ -1,0 +1,70 @@
+const AWS = require('aws-sdk');
+const s3 = new AWS.S3();
+const sharp = require('sharp');
+
+// Set the region and name of your DynamoDB table
+const region = 'your-dynamodb-table-region';
+const tableName = 'your-dynamodb-table-name';
+const docClient = new AWS.DynamoDB.DocumentClient({ region });
+
+exports.handler = async (event) => {
+  const n = event.n; // number of files to retrieve
+  const bucketName = 'your-bucket-name'; // name of your S3 bucket
+  const directoryPath = 'path/to/directory'; // path to the S3 directory containing files
+  const s3Params = {
+    Bucket: bucketName,
+    Prefix: directoryPath
+  };
+
+  try {
+    // Get a list of all objects in the specified directory
+    const s3Response = await s3.listObjectsV2(s3Params).promise();
+    const objects = s3Response.Contents;
+
+    // Filter the objects to only include TIFF files
+    const tiffObjects = objects.filter(obj => {
+      const extname = obj.Key.split('.').pop();
+      return extname.toLowerCase() === 'tif' || extname.toLowerCase() === 'tiff';
+    });
+
+    // Limit the number of files to n
+    const filesToProcess = tiffObjects.slice(0, n);
+
+    // Process each file and get its page count
+    const results = await Promise.all(filesToProcess.map(async obj => {
+      const s3ObjectParams = {
+        Bucket: bucketName,
+        Key: obj.Key
+      };
+      const imageStream = s3.getObject(s3ObjectParams).createReadStream();
+      const image = sharp();
+      image.metadata()
+      const { pages } = await image.pages();
+      return { file: obj.Key, pageCount: pages.length };
+    }));
+
+    // Store the results in DynamoDB
+    await Promise.all(results.map(async result => {
+      const params = {
+        TableName: tableName,
+        Item: {
+          filename: result.file,
+          pageCount: result.pageCount
+        }
+      };
+      await docClient.put(params).promise();
+    }));
+
+    // Return the results
+    return {
+      statusCode: 200,
+      body: JSON.stringify(results)
+    };
+  } catch (err) {
+    console.error(err);
+    return {
+      statusCode: 500,
+      body: JSON.stringify({ message: 'Error processing files' })
+    };
+  }
+};
